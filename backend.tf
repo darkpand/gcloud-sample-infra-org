@@ -1,0 +1,60 @@
+locals {
+  backend_project_services = [
+    "compute.googleapis.com"
+  ]
+}
+
+resource "google_project" "example-backend-proj" {
+  name            = "${var.prefix}-example-backend"
+  project_id      = "${var.prefix}-example-backend"
+  folder_id       = google_folder.backend-folder.name
+  billing_account = var.billing_account
+}
+
+resource "google_project_service" "example-backend-services" {
+  for_each = toset(local.backend_project_services)
+  project  = google_project.example-backend-proj.id
+  service  = each.key
+}
+
+resource "google_compute_shared_vpc_service_project" "example-backend-service-project" {
+  host_project    = google_project.example-net-proj.name
+  service_project = google_project.example-backend-proj.name
+}
+
+resource "google_service_account" "example-backend-mig-sa" {
+  project      = google_project.example-backend-proj.name
+  account_id   = "${var.prefix}-be-mig-sa"
+  display_name = "Backend MIG SA"
+}
+
+resource "google_compute_instance_template" "example-backend-instance-template" {
+  project     = google_project.example-backend-proj.name
+  name_prefix = "${var.prefix}-httpd-be-"
+  region      = var.region
+  network_interface {
+    network            = google_compute_network.example-net-vpc.id
+    subnetwork         = google_compute_subnetwork.example-net-subnet["example-backend"].id
+    subnetwork_project = google_project.example-net-proj.name
+  }
+  labels = {
+    "mig-name" = "httpd-be"
+  }
+  machine_type = "e2-micro"
+  metadata = {
+    google-logging-enabled = true
+  }
+  tags = [
+    "http"
+  ]
+  disk {
+    auto_delete  = true
+    boot         = true
+    source_image = "projects/cos-cloud/global/images/family/cos-stable"
+  }
+  service_account {
+    email  = google_service_account.example-backend-mig-sa.email
+    scopes = ["cloud-platform"]
+  }
+  lifecycle { create_before_destroy = true }
+}
