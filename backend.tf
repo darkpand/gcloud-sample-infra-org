@@ -4,6 +4,7 @@ locals {
   ]
 }
 
+# inserire permesso compute.instances.create per 634873820391@cloudservices.gserviceaccount.com
 resource "google_project" "example-backend-proj" {
   name            = "${var.prefix}-example-backend"
   project_id      = "${var.prefix}-example-backend"
@@ -42,6 +43,7 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
   }
   machine_type = "e2-micro"
   metadata = {
+    user-data              = file("cloud-init/backend.init")
     google-logging-enabled = true
   }
   tags = [
@@ -58,3 +60,44 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
   }
   lifecycle { create_before_destroy = true }
 }
+
+resource "google_compute_region_instance_group_manager" "example-backend-instance-group-manager" {
+  project            = google_project.example-backend-proj.name
+  name               = "httpd-be"
+  region             = var.region
+  base_instance_name = "httpd-be"
+  version {
+    instance_template = google_compute_instance_template.example-backend-instance-template.id
+    name              = google_compute_instance_template.example-backend-instance-template.name
+  }
+  named_port {
+    name = "http"
+    port = 80
+  }
+  #  auto_healing_policies {
+  #    health_check      = google_compute_http_health_check.example-backend-healthcheck.id
+  #    initial_delay_sec = 120
+  #  }
+}
+
+resource "google_compute_http_health_check" "example-backend-healthcheck" {
+  project      = google_project.example-backend-proj.name
+  name         = "httpd-be-hc"
+  request_path = "/"
+}
+
+resource "google_compute_region_autoscaler" "gcp-httpd001" {
+  project = google_project.example-backend-proj.name
+  region  = var.region
+  name    = "httpd-be"
+  target  = google_compute_region_instance_group_manager.example-backend-instance-group-manager.id
+  autoscaling_policy {
+    max_replicas    = 5
+    min_replicas    = 1
+    cooldown_period = 60
+    cpu_utilization {
+      target = 0.5
+    }
+  }
+}
+

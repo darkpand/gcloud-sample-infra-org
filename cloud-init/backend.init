@@ -1,0 +1,21 @@
+#cloud-config
+users:
+- name: httpd
+  uid: 2000
+
+write_files:
+- path: /etc/systemd/system/httpd.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=httpd container
+
+    [Service]
+    ExecStart=/usr/bin/docker run --rm -u 2000 --name=httpd httpd:latest-alpine
+    ExecStop=/usr/bin/docker stop httpd
+    ExecStopPost=/usr/bin/docker rm httpd
+
+runcmd:
+- systemctl daemon-reload
+- systemctl start httpd.service
