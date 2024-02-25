@@ -76,22 +76,27 @@ resource "google_compute_region_instance_group_manager" "example-backend-instanc
     port = 80
   }
   update_policy {
-    type           = "PROACTIVE"
-    minimal_action = "REPLACE"
+    type                  = "PROACTIVE"
+    minimal_action        = "REPLACE"
+    max_unavailable_fixed = 3
   }
   auto_healing_policies {
-    health_check      = google_compute_http_health_check.example-backend-healthcheck.id
+    health_check      = google_compute_health_check.example-backend-healthcheck.id
     initial_delay_sec = 120
   }
 }
 
-resource "google_compute_http_health_check" "example-backend-healthcheck" {
-  project      = google_project.example-backend-proj.name
-  name         = "httpd-be-hc"
-  request_path = "/"
+resource "google_compute_health_check" "example-backend-healthcheck" {
+  project = google_project.example-backend-proj.name
+  name    = "httpd-be-hc"
+  http_health_check {
+    port_name          = "http"
+    port_specification = "USE_NAMED_PORT"
+    request_path       = "/"
+  }
 }
 
-resource "google_compute_region_autoscaler" "gcp-httpd001" {
+resource "google_compute_region_autoscaler" "example-backend-autoscaler" {
   project = google_project.example-backend-proj.name
   region  = var.region
   name    = "httpd-be"
@@ -104,5 +109,33 @@ resource "google_compute_region_autoscaler" "gcp-httpd001" {
       target = 0.5
     }
   }
+}
+
+resource "google_compute_region_backend_service" "example-backend-service" {
+  project               = google_project.example-backend-proj.name
+  name                  = "httpd-be"
+  region                = var.region
+  load_balancing_scheme = "INTERNAL"
+  health_checks         = [google_compute_health_check.example-backend-healthcheck.self_link]
+  network               = google_compute_network.example-net-vpc.id
+  protocol              = "TCP"
+  failover_policy {
+    drop_traffic_if_unhealthy = true
+  }
+  backend {
+    group = google_compute_region_instance_group_manager.example-backend-instance-group-manager.instance_group
+  }
+}
+
+resource "google_compute_forwarding_rule" "example-backend-forwarding-rule" {
+  project               = google_project.example-backend-proj.name
+  name                  = "httpd-be-fwrule"
+  region                = var.region
+  load_balancing_scheme = "INTERNAL"
+  network               = google_compute_network.example-net-vpc.id
+  subnetwork            = google_compute_subnetwork.example-net-subnet["example-backend"].id
+  ip_protocol           = "TCP"
+  ports                 = [80]
+  backend_service       = google_compute_region_backend_service.example-backend-service.self_link
 }
 
