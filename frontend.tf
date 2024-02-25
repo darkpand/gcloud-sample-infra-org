@@ -30,7 +30,7 @@ resource "google_service_account" "example-frontend-mig-sa" {
 
 resource "google_compute_instance_template" "example-frontend-instance-template" {
   project     = google_project.example-frontend-proj.name
-  name_prefix = "${var.prefix}-httpd-fe-"
+  name_prefix = "${var.prefix}-haproxy-fe-"
   region      = var.region
   network_interface {
     network            = google_compute_network.example-net-vpc.id
@@ -38,7 +38,7 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
     subnetwork_project = google_project.example-net-proj.name
   }
   labels = {
-    "mig-name" = "httpd-fe"
+    "mig-name" = "haproxy-fe"
   }
   machine_type = "e2-micro"
   metadata = {
@@ -63,9 +63,9 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
 
 resource "google_compute_region_instance_group_manager" "example-frontend-instance-group-manager" {
   project            = google_project.example-frontend-proj.name
-  name               = "httpd-fe"
+  name               = "haproxy-fe"
   region             = var.region
-  base_instance_name = "httpd-fe"
+  base_instance_name = "haproxy-fe"
   version {
     instance_template = google_compute_instance_template.example-frontend-instance-template.id
     name              = google_compute_instance_template.example-frontend-instance-template.name
@@ -89,7 +89,7 @@ resource "google_compute_region_instance_group_manager" "example-frontend-instan
 
 resource "google_compute_health_check" "example-frontend-healthcheck" {
   project = google_project.example-frontend-proj.name
-  name    = "httpd-fe-hc"
+  name    = "haproxy-fe-hc"
   http_health_check {
     port_name          = "http"
     port_specification = "USE_NAMED_PORT"
@@ -100,7 +100,7 @@ resource "google_compute_health_check" "example-frontend-healthcheck" {
 resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
   project = google_project.example-frontend-proj.name
   region  = var.region
-  name    = "httpd-fe"
+  name    = "haproxy-fe"
   target  = google_compute_region_instance_group_manager.example-frontend-instance-group-manager.id
   autoscaling_policy {
     max_replicas    = 10
@@ -112,30 +112,42 @@ resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
   }
 }
 
-resource "google_compute_region_backend_service" "example-frontend-service" {
+resource "google_compute_global_address" "example-frontend-external-address" {
+  project      = google_project.example-frontend-proj.name
+  name         = "haproxy-fe-extaddr"
+  address_type = "EXTERNAL"
+  description  = "FE MIG External Load Balancer address"
+}
+
+resource "google_compute_url_map" "example-frontend-urlmap" {
+  project         = google_project.example-frontend-proj.name
+  name            = "haproxy-fe-urlmap"
+  default_service = google_compute_backend_service.example-frontend-service.id
+}
+
+resource "google_compute_target_http_proxy" "example-frontend-http-proxy" {
+  project = google_project.example-frontend-proj.name
+  name    = "haproxy-fe-http-proxy"
+  url_map = google_compute_url_map.example-frontend-urlmap.id
+}
+
+
+resource "google_compute_backend_service" "example-frontend-service" {
   project               = google_project.example-frontend-proj.name
-  name                  = "httpd-fe"
-  region                = var.region
-  load_balancing_scheme = "INTERNAL"
+  name                  = "haproxy-fe"
+  load_balancing_scheme = "EXTERNAL"
   health_checks         = [google_compute_health_check.example-frontend-healthcheck.self_link]
-  network               = google_compute_network.example-net-vpc.id
-  protocol              = "TCP"
-  failover_policy {
-    drop_traffic_if_unhealthy = true
-  }
+  protocol              = "HTTP"
   backend {
     group = google_compute_region_instance_group_manager.example-frontend-instance-group-manager.instance_group
   }
 }
 
-resource "google_compute_forwarding_rule" "example-frontend-forwarding-rule" {
+resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule" {
   project               = google_project.example-frontend-proj.name
-  name                  = "httpd-fe-fwrule"
-  region                = var.region
-  load_balancing_scheme = "INTERNAL"
-  network               = google_compute_network.example-net-vpc.id
-  subnetwork            = google_compute_subnetwork.example-net-subnet["example-frontend"].id
-  ip_protocol           = "TCP"
-  ports                 = [80]
-  backend_service       = google_compute_region_backend_service.example-frontend-service.self_link
+  name                  = "haproxy-fe-fwrule"
+  load_balancing_scheme = "EXTERNAL"
+  port_range            = "80"
+  ip_address            = google_compute_global_address.example-frontend-external-address.id
+  target                = google_compute_target_http_proxy.example-frontend-http-proxy.id
 }
