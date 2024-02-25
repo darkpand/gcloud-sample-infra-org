@@ -78,7 +78,9 @@ resource "google_compute_region_instance_group_manager" "example-backend-instanc
   update_policy {
     type                  = "PROACTIVE"
     minimal_action        = "REPLACE"
-    max_unavailable_fixed = 3
+    max_surge_fixed       = 3
+    max_unavailable_fixed = 0
+
   }
   auto_healing_policies {
     health_check      = google_compute_health_check.example-backend-healthcheck.id
@@ -102,11 +104,11 @@ resource "google_compute_region_autoscaler" "example-backend-autoscaler" {
   name    = "httpd-be"
   target  = google_compute_region_instance_group_manager.example-backend-instance-group-manager.id
   autoscaling_policy {
-    max_replicas    = 5
+    max_replicas    = 10
     min_replicas    = 1
     cooldown_period = 60
     cpu_utilization {
-      target = 0.5
+      target = 0.9
     }
   }
 }
