@@ -45,6 +45,7 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
   metadata = {
     user-data              = file("cloud-init/backend.init")
     google-logging-enabled = true
+    enable-oslogin         = true
   }
   tags = [
     "http"
@@ -74,10 +75,14 @@ resource "google_compute_region_instance_group_manager" "example-backend-instanc
     name = "http"
     port = 80
   }
-  #  auto_healing_policies {
-  #    health_check      = google_compute_http_health_check.example-backend-healthcheck.id
-  #    initial_delay_sec = 120
-  #  }
+  update_policy {
+    type           = "PROACTIVE"
+    minimal_action = "REPLACE"
+  }
+  auto_healing_policies {
+    health_check      = google_compute_http_health_check.example-backend-healthcheck.id
+    initial_delay_sec = 120
+  }
 }
 
 resource "google_compute_http_health_check" "example-backend-healthcheck" {
