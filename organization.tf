@@ -1,8 +1,10 @@
+# Create the main folder...
 resource "google_folder" "example-folder" {
   display_name = "Example"
   parent       = "organizations/${var.organization.id}"
 }
 
+# ...and some folders inside it.
 resource "google_folder" "networking-folder" {
   display_name = "Networking"
   parent       = google_folder.example-folder.name

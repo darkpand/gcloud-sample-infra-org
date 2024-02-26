@@ -8,6 +8,7 @@ locals {
   ]
 }
 
+#Create the Network project and activate some APIs
 resource "google_project" "example-net-proj" {
   name            = "${var.prefix}-example-net"
   project_id      = "${var.prefix}-example-net"
@@ -15,7 +16,6 @@ resource "google_project" "example-net-proj" {
   billing_account = var.billing_account
 }
 
-#enable project services for the project
 resource "google_project_service" "example-net-services" {
   for_each = toset(local.net_project_services)
   project  = google_project.example-net-proj.id
@@ -31,6 +31,7 @@ resource "google_project_iam_member" "example-net-users-iam" {
   member   = "serviceAccount:${each.key}@cloudservices.gserviceaccount.com"
 }
 
+# Create the VPC
 resource "google_compute_network" "example-net-vpc" {
   project                 = google_project.example-net-proj.name
   name                    = "example-net-vpc"
@@ -40,20 +41,24 @@ resource "google_compute_network" "example-net-vpc" {
     google_project_service.example-net-services
   ]
 }
+
+# Define this project as the Host project, so we will share the VPC 
+# with the Service projects
 resource "google_compute_shared_vpc_host_project" "example-net-host-project" {
   project = google_project.example-net-proj.name
 }
 
+# Create some subnets
 resource "google_compute_subnetwork" "example-net-subnet" {
-  project       = google_project.example-net-proj.name
   for_each      = var.subnets
+  project       = google_project.example-net-proj.name
   name          = each.key
   region        = var.region
   ip_cidr_range = each.value
   network       = google_compute_network.example-net-vpc.id
 }
 
-# enable traffic to port 80 for resources with "http" tag
+# Enable traffic to port 80 for resources with "http" tag
 resource "google_compute_firewall" "example-net-firewall-http" {
   project = google_project.example-net-proj.name
   name    = "example-net-firewall-http"
@@ -66,7 +71,7 @@ resource "google_compute_firewall" "example-net-firewall-http" {
   target_tags   = ["http"]
 }
 
-# enable ssh traffic from IAP ranges
+# Enable ssh traffic from IAP ranges
 resource "google_compute_firewall" "example-net-firewall-sshiap" {
   project = google_project.example-net-proj.name
   name    = "example-net-firewall-sshiap"
@@ -78,7 +83,7 @@ resource "google_compute_firewall" "example-net-firewall-sshiap" {
   source_ranges = ["35.235.240.0/20"]
 }
 
-
+# Create a Cloud Router and attach it to the VPC
 resource "google_compute_router" "example-net-router" {
   project = google_project.example-net-proj.name
   name    = "cloud-router"
@@ -86,6 +91,7 @@ resource "google_compute_router" "example-net-router" {
   region  = var.region
 }
 
+# Attach a Cloud NAT to the Cloud Router
 resource "google_compute_router_nat" "example-net-nat" {
   project                            = google_project.example-net-proj.name
   name                               = "example-net-nat"

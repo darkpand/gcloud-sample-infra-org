@@ -4,7 +4,7 @@ locals {
   ]
 }
 
-# inserire permesso compute.instances.create per 634873820391@cloudservices.gserviceaccount.com
+# Create the BE project and activate some APIs
 resource "google_project" "example-backend-proj" {
   name            = "${var.prefix}-example-backend"
   project_id      = "${var.prefix}-example-backend"
@@ -18,17 +18,22 @@ resource "google_project_service" "example-backend-services" {
   service  = each.key
 }
 
+# Connect to the Shared VPC in the network project
 resource "google_compute_shared_vpc_service_project" "example-backend-service-project" {
   host_project    = google_project.example-net-proj.name
   service_project = google_project.example-backend-proj.name
 }
 
+# Instance Group section
+
+# Create an SA for the MIG instances
 resource "google_service_account" "example-backend-mig-sa" {
   project      = google_project.example-backend-proj.name
   account_id   = "${var.prefix}-be-mig-sa"
   display_name = "Backend MIG SA"
 }
 
+# Instance template: here we define all the options of the instances in the MIG.
 resource "google_compute_instance_template" "example-backend-instance-template" {
   project     = google_project.example-backend-proj.name
   name_prefix = "${var.prefix}-httpd-be-"
@@ -42,6 +47,7 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
     "mig-name" = "httpd-be"
   }
   machine_type = "e2-micro"
+  # here we take the cloud-init from a file. It creates the systemd unit that launches the apache docker
   metadata = {
     user-data              = file("cloud-init/backend.init")
     google-logging-enabled = true
@@ -50,6 +56,7 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
   tags = [
     "http"
   ]
+  # we use Container Optimized OS from Google
   disk {
     auto_delete  = true
     boot         = true
@@ -62,6 +69,8 @@ resource "google_compute_instance_template" "example-backend-instance-template" 
   lifecycle { create_before_destroy = true }
 }
 
+# Create the instance group manager, that replaces/add/remove instances from the MIG when triggered
+# (from health checks, the autoscaler, or external factors like instance deletion)
 resource "google_compute_region_instance_group_manager" "example-backend-instance-group-manager" {
   project            = google_project.example-backend-proj.name
   name               = "httpd-be"
@@ -88,6 +97,8 @@ resource "google_compute_region_instance_group_manager" "example-backend-instanc
   }
 }
 
+# Check if an http request for / on port 80 gives a 2xx code
+# it's best practice to change the path with a specific one configured on the server
 resource "google_compute_health_check" "example-backend-healthcheck" {
   project = google_project.example-backend-proj.name
   name    = "httpd-be-hc"
@@ -98,6 +109,8 @@ resource "google_compute_health_check" "example-backend-healthcheck" {
   }
 }
 
+# the autoscaler decides the desired instance count based on its policies, in this case
+# a simple metric of 90% cpu usage, and triggers the instance group manager
 resource "google_compute_region_autoscaler" "example-backend-autoscaler" {
   project = google_project.example-backend-proj.name
   region  = var.region
@@ -113,6 +126,9 @@ resource "google_compute_region_autoscaler" "example-backend-autoscaler" {
   }
 }
 
+# Load Balancer Section
+
+# The backend service, to attach the MIG to the balancer
 resource "google_compute_region_backend_service" "example-backend-service" {
   project               = google_project.example-backend-proj.name
   name                  = "httpd-be"
@@ -129,6 +145,7 @@ resource "google_compute_region_backend_service" "example-backend-service" {
   }
 }
 
+# Forwarding rule is the front component of the ILB
 resource "google_compute_forwarding_rule" "example-backend-forwarding-rule" {
   project               = google_project.example-backend-proj.name
   name                  = "httpd-be-fwrule"

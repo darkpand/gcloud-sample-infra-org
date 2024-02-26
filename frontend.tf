@@ -4,6 +4,7 @@ locals {
   ]
 }
 
+# Create the FE project and activate some APIs
 resource "google_project" "example-frontend-proj" {
   name            = "${var.prefix}-example-frontend"
   project_id      = "${var.prefix}-example-frontend"
@@ -17,17 +18,20 @@ resource "google_project_service" "example-frontend-services" {
   service  = each.key
 }
 
+# Connect to the Shared VPC in the network project
 resource "google_compute_shared_vpc_service_project" "example-frontend-service-project" {
   host_project    = google_project.example-net-proj.name
   service_project = google_project.example-frontend-proj.name
 }
 
+# Create an SA for the MIG instances
 resource "google_service_account" "example-frontend-mig-sa" {
   project      = google_project.example-frontend-proj.name
   account_id   = "${var.prefix}-fe-mig-sa"
   display_name = "Frontend MIG SA"
 }
 
+# Instance template: here we define all the options of the instances in the MIG.
 resource "google_compute_instance_template" "example-frontend-instance-template" {
   project     = google_project.example-frontend-proj.name
   name_prefix = "${var.prefix}-haproxy-fe-"
@@ -41,14 +45,21 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
     "mig-name" = "haproxy-fe"
   }
   machine_type = "e2-micro"
+  # here we use a template to generate the cloud-init. It :
+  # creates the haproxy config file in the stateful partition (dir haproxy/) 
+  # creates the systemd unit that launches the haproxy docker and mounts the haproxy/ dir inside of it
   metadata = {
-    user-data              = templatefile("cloud-init/frontend.tpl", { be_ip = google_compute_forwarding_rule.example-backend-forwarding-rule.ip_address })
+    user-data = templatefile(
+      "cloud-init/frontend.tpl",
+      { be_ip = google_compute_forwarding_rule.example-backend-forwarding-rule.ip_address }
+    )
     google-logging-enabled = true
     enable-oslogin         = true
   }
   tags = [
     "http"
   ]
+  # we use Container Optimized OS from Google
   disk {
     auto_delete  = true
     boot         = true
@@ -61,6 +72,8 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
   lifecycle { create_before_destroy = true }
 }
 
+# Create the instance group manager, that replaces/add/remove instances from the MIG when triggered
+# (from health checks, the autoscaler, or external factors like instance deletion)
 resource "google_compute_region_instance_group_manager" "example-frontend-instance-group-manager" {
   project            = google_project.example-frontend-proj.name
   name               = "haproxy-fe"
@@ -87,6 +100,8 @@ resource "google_compute_region_instance_group_manager" "example-frontend-instan
   }
 }
 
+# Check if an http request for / on port 80 gives a 2xx code
+# it's best practice to change the path with a specific one configured on the server
 resource "google_compute_health_check" "example-frontend-healthcheck" {
   project = google_project.example-frontend-proj.name
   name    = "haproxy-fe-hc"
@@ -97,6 +112,8 @@ resource "google_compute_health_check" "example-frontend-healthcheck" {
   }
 }
 
+# the autoscaler decides the desired instance count based on its policies, in this case
+# a simple metric of 90% cpu usage, and triggers the instance group manager
 resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
   project = google_project.example-frontend-proj.name
   region  = var.region
@@ -112,6 +129,9 @@ resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
   }
 }
 
+# Load Balancer Section
+
+# Reserve a fixed public IP
 resource "google_compute_global_address" "example-frontend-external-address" {
   project      = google_project.example-frontend-proj.name
   name         = "haproxy-fe-extaddr"
@@ -119,19 +139,22 @@ resource "google_compute_global_address" "example-frontend-external-address" {
   description  = "FE MIG External Load Balancer address"
 }
 
+# The urlmap is used to route traffic based on urls and headers;
+# to rewrite urls and headers; to generate redirects; and more.
 resource "google_compute_url_map" "example-frontend-urlmap" {
   project         = google_project.example-frontend-proj.name
   name            = "haproxy-fe-urlmap"
   default_service = google_compute_backend_service.example-frontend-service.id
 }
 
+# This is a L7 load balancer so it has a proxy component
 resource "google_compute_target_http_proxy" "example-frontend-http-proxy" {
   project = google_project.example-frontend-proj.name
   name    = "haproxy-fe-http-proxy"
   url_map = google_compute_url_map.example-frontend-urlmap.id
 }
 
-
+# The backend service, to attach the MIG to the balancer
 resource "google_compute_backend_service" "example-frontend-service" {
   project               = google_project.example-frontend-proj.name
   name                  = "haproxy-fe"
@@ -143,6 +166,7 @@ resource "google_compute_backend_service" "example-frontend-service" {
   }
 }
 
+# Forwarding rule is the front component of the GLB
 resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule" {
   project               = google_project.example-frontend-proj.name
   name                  = "haproxy-fe-fwrule"
