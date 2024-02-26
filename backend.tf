@@ -92,8 +92,8 @@ resource "google_compute_health_check" "example-backend-healthcheck" {
   project = google_project.example-backend-proj.name
   name    = "httpd-be-hc"
   http_health_check {
-    port_name          = "http"
-    port_specification = "USE_NAMED_PORT"
+    port               = 80
+    port_specification = "USE_FIXED_PORT"
     request_path       = "/"
   }
 }
