@@ -1,6 +1,7 @@
 locals {
   net_project_services = [
-    "compute.googleapis.com"
+    "compute.googleapis.com",
+    "dns.googleapis.com"
   ]
   network_users = [
     google_project.example-backend-proj.number,
@@ -103,4 +104,11 @@ resource "google_compute_router_nat" "example-net-nat" {
     enable = true
     filter = "ERRORS_ONLY"
   }
+}
+
+resource "google_dns_managed_zone" "example-zone" {
+  project     = google_project.example-net-proj.name
+  name        = "example-zone"
+  dns_name    = "example.gcp.${var.organization.domain}."
+  description = "Example DNS zone"
 }

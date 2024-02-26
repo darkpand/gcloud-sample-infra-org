@@ -1,7 +1,9 @@
 locals {
   frontend_project_services = [
-    "compute.googleapis.com"
+    "compute.googleapis.com",
+    "certificatemanager.googleapis.com"
   ]
+  app_fqdn = "app.${trim(google_dns_managed_zone.example-zone.dns_name, ".")}"
 }
 
 # Create the FE project and activate some APIs
@@ -154,6 +156,13 @@ resource "google_compute_target_http_proxy" "example-frontend-http-proxy" {
   url_map = google_compute_url_map.example-frontend-urlmap.id
 }
 
+resource "google_compute_target_https_proxy" "example-frontend-https-proxy" {
+  project         = google_project.example-frontend-proj.name
+  name            = "haproxy-fe-https-proxy"
+  url_map         = google_compute_url_map.example-frontend-urlmap.id
+  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.example-certmap.id}"
+}
+
 # The backend service, to attach the MIG to the balancer
 resource "google_compute_backend_service" "example-frontend-service" {
   project               = google_project.example-frontend-proj.name
@@ -167,11 +176,79 @@ resource "google_compute_backend_service" "example-frontend-service" {
 }
 
 # Forwarding rule is the front component of the GLB
-resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule" {
+resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule-http" {
   project               = google_project.example-frontend-proj.name
-  name                  = "haproxy-fe-fwrule"
+  name                  = "haproxy-fe-fwrule-http"
   load_balancing_scheme = "EXTERNAL"
   port_range            = "80"
   ip_address            = google_compute_global_address.example-frontend-external-address.id
   target                = google_compute_target_http_proxy.example-frontend-http-proxy.id
+}
+resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule-https" {
+  project               = google_project.example-frontend-proj.name
+  name                  = "haproxy-fe-fwrule-https"
+  load_balancing_scheme = "EXTERNAL"
+  port_range            = "443"
+  ip_address            = google_compute_global_address.example-frontend-external-address.id
+  target                = google_compute_target_https_proxy.example-frontend-https-proxy.id
+}
+
+# Certificate Manager Section
+
+# Create a certificate map, used by the https proxy
+resource "google_certificate_manager_certificate_map" "example-certmap" {
+  project     = google_project.example-frontend-proj.name
+  name        = "example-certmap"
+  description = "Certificate map for ${local.app_fqdn}"
+}
+
+# add a certificate entry to the map using...
+resource "google_certificate_manager_certificate_map_entry" "example-certmap-entry" {
+  project      = google_project.example-frontend-proj.name
+  name         = "example-certmap-entry"
+  description  = "Cert Manager map entry for ${local.app_fqdn}"
+  map          = google_certificate_manager_certificate_map.example-certmap.name
+  certificates = [google_certificate_manager_certificate.example-certmap-certificate.id]
+  matcher      = "PRIMARY"
+}
+
+# ...this certificate. Authorize it using...
+resource "google_certificate_manager_certificate" "example-certmap-certificate" {
+  project     = google_project.example-frontend-proj.name
+  name        = "example-certmap-certificate"
+  description = "Cert Manager certificate for ${local.app_fqdn}"
+  scope       = "DEFAULT"
+  managed {
+    domains            = [local.app_fqdn]
+    dns_authorizations = [google_certificate_manager_dns_authorization.example-dns-auth.id]
+  }
+}
+
+# ...this dns authorization
+resource "google_certificate_manager_dns_authorization" "example-dns-auth" {
+  project     = google_project.example-frontend-proj.name
+  name        = "example-dns-auth"
+  description = "Cert Manager authorization for ${local.app_fqdn}"
+  domain      = local.app_fqdn
+}
+
+# The dns record for dns auth. We put the entry on the same project as the dns zone, because
+# Cloud DNS is a bit grumpy about cross-project dns.
+resource "google_dns_record_set" "example-dns-auth-entry" {
+  project      = google_project.example-net-proj.name
+  name         = google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].name
+  type         = google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].type
+  rrdatas      = [google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].data]
+  managed_zone = google_dns_managed_zone.example-zone.name
+  ttl          = 300
+}
+
+# The dns record for our app.
+resource "google_dns_record_set" "example-dns-app-entry" {
+  project      = google_project.example-net-proj.name
+  name         = "app.${google_dns_managed_zone.example-zone.dns_name}"
+  managed_zone = google_dns_managed_zone.example-zone.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [google_compute_global_address.example-frontend-external-address.address]
 }
