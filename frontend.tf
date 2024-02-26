@@ -3,7 +3,7 @@ locals {
     "compute.googleapis.com",
     "certificatemanager.googleapis.com"
   ]
-  app_fqdn = "app.${trim(google_dns_managed_zone.example-zone.dns_name, ".")}"
+  app_fqdn = "app-${var.prefix}.${trim(google_dns_managed_zone.example-zone.dns_name, ".")}"
 }
 
 # Create the FE project and activate some APIs
@@ -246,7 +246,7 @@ resource "google_dns_record_set" "example-dns-auth-entry" {
 # The dns record for our app.
 resource "google_dns_record_set" "example-dns-app-entry" {
   project      = google_project.example-net-proj.name
-  name         = "app.${google_dns_managed_zone.example-zone.dns_name}"
+  name         = "app-${var.prefix}.${google_dns_managed_zone.example-zone.dns_name}"
   managed_zone = google_dns_managed_zone.example-zone.name
   type         = "A"
   ttl          = 300
