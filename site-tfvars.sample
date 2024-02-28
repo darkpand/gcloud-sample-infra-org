@@ -1,0 +1,18 @@
+variable "organization" {
+  description = "Organization details."
+  type = object({
+    customer_id = string
+    domain      = string
+    id          = number
+  })
+  default = {
+    customer_id = "customerid"
+    domain      = "domainname"
+    id          = org_id
+  }
+}
+variable "billing_account" {
+  type    = string
+  default = "billingaccountid"
+}
+

@@ -12,7 +12,7 @@
 .idea
 .vscode
 backend-config.hcl
-variables-private.tf
+site-tfvars.tf
 credentials.json
 key.json
 terraform-ls.tf

@@ -1,47 +1,57 @@
 locals {
-  frontend_project_services = [
+  frontend_api = [
     "compute.googleapis.com",
     "certificatemanager.googleapis.com"
   ]
-  app_fqdn = "app-${var.prefix}.${trim(google_dns_managed_zone.example-zone.dns_name, ".")}"
+  frontend-proj-services = {
+    for tuple in setproduct(var.env, local.frontend_api) :
+    "${tuple[0]}-${regex("^[a-z]*", tuple[1])}" =>
+    { env = tuple[0], service = tuple[1] }
+  }
+  app_fqdn = "app.${trim(google_dns_managed_zone.net-dns-zone["dev"].dns_name, ".")}"
+
 }
 
 # Create the FE project and activate some APIs
-resource "google_project" "example-frontend-proj" {
-  name            = "${var.prefix}-example-frontend"
-  project_id      = "${var.prefix}-example-frontend"
-  folder_id       = google_folder.frontend-folder.name
+resource "google_project" "frontend-proj" {
+  for_each        = toset(var.env)
+  name            = "${var.app}-${each.key}-frontend"
+  project_id      = "${var.app}-${each.key}-frontend"
+  folder_id       = google_folder.frontend-env-folder[each.key].name
   billing_account = var.billing_account
 }
 
-resource "google_project_service" "example-frontend-services" {
-  for_each = toset(local.frontend_project_services)
-  project  = google_project.example-frontend-proj.id
-  service  = each.key
+resource "google_project_service" "frontend-proj-services" {
+  for_each = local.frontend-proj-services
+  project  = google_project.frontend-proj[each.value.env].id
+  service  = each.value.service
 }
 
 # Connect to the Shared VPC in the network project
-resource "google_compute_shared_vpc_service_project" "example-frontend-service-project" {
-  host_project    = google_project.example-net-proj.name
-  service_project = google_project.example-frontend-proj.name
+resource "google_compute_shared_vpc_service_project" "frontend-service-project" {
+  for_each        = toset(var.env)
+  host_project    = google_project.net-proj[each.key].name
+  service_project = google_project.frontend-proj[each.key].name
 }
 
 # Create an SA for the MIG instances
-resource "google_service_account" "example-frontend-mig-sa" {
-  project      = google_project.example-frontend-proj.name
-  account_id   = "${var.prefix}-fe-mig-sa"
-  display_name = "Frontend MIG SA"
+resource "google_service_account" "frontend-mig-sa" {
+  for_each     = toset(var.env)
+  project      = google_project.frontend-proj[each.key].name
+  account_id   = "${var.app}-${each.key}-fe-mig-sa"
+  display_name = "Frontend MIG SA - ${each.key} env"
 }
 
 # Instance template: here we define all the options of the instances in the MIG.
-resource "google_compute_instance_template" "example-frontend-instance-template" {
-  project     = google_project.example-frontend-proj.name
-  name_prefix = "${var.prefix}-haproxy-fe-"
+resource "google_compute_instance_template" "frontend-instance-template" {
+  for_each    = toset(var.env)
+  project     = google_project.frontend-proj[each.key].name
+  name_prefix = "${var.app}-${each.key}-haproxy-fe-"
   region      = var.region
   network_interface {
-    network            = google_compute_network.example-net-vpc.id
-    subnetwork         = google_compute_subnetwork.example-net-subnet["example-frontend"].id
-    subnetwork_project = google_project.example-net-proj.name
+    network            = google_compute_network.net-vpc[each.key].id
+    subnetwork         = google_compute_subnetwork.net-subnet-fe[each.key].id
+    subnetwork_project = google_project.net-proj[each.key].name
   }
   labels = {
     "mig-name" = "haproxy-fe"
@@ -53,7 +63,7 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
   metadata = {
     user-data = templatefile(
       "cloud-init/frontend.tpl",
-      { be_ip = google_compute_forwarding_rule.example-backend-forwarding-rule.ip_address }
+      { be_ip = google_compute_forwarding_rule.backend-forwarding-rule[each.key].ip_address }
     )
     google-logging-enabled = true
     enable-oslogin         = true
@@ -68,7 +78,7 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
     source_image = "projects/cos-cloud/global/images/family/cos-stable"
   }
   service_account {
-    email  = google_service_account.example-frontend-mig-sa.email
+    email  = google_service_account.frontend-mig-sa[each.key].email
     scopes = ["cloud-platform"]
   }
   lifecycle { create_before_destroy = true }
@@ -76,14 +86,15 @@ resource "google_compute_instance_template" "example-frontend-instance-template"
 
 # Create the instance group manager, that replaces/add/remove instances from the MIG when triggered
 # (from health checks, the autoscaler, or external factors like instance deletion)
-resource "google_compute_region_instance_group_manager" "example-frontend-instance-group-manager" {
-  project            = google_project.example-frontend-proj.name
+resource "google_compute_region_instance_group_manager" "frontend-instance-group-manager" {
+  for_each           = toset(var.env)
+  project            = google_project.frontend-proj[each.key].name
   name               = "haproxy-fe"
   region             = var.region
   base_instance_name = "haproxy-fe"
   version {
-    instance_template = google_compute_instance_template.example-frontend-instance-template.id
-    name              = google_compute_instance_template.example-frontend-instance-template.name
+    instance_template = google_compute_instance_template.frontend-instance-template[each.key].id
+    name              = google_compute_instance_template.frontend-instance-template[each.key].name
   }
   named_port {
     name = "http"
@@ -97,16 +108,17 @@ resource "google_compute_region_instance_group_manager" "example-frontend-instan
 
   }
   auto_healing_policies {
-    health_check      = google_compute_health_check.example-frontend-healthcheck.id
+    health_check      = google_compute_health_check.frontend-healthcheck[each.key].id
     initial_delay_sec = 120
   }
 }
 
 # Check if an http request for / on port 80 gives a 2xx code
 # it's best practice to change the path with a specific one configured on the server
-resource "google_compute_health_check" "example-frontend-healthcheck" {
-  project = google_project.example-frontend-proj.name
-  name    = "haproxy-fe-hc"
+resource "google_compute_health_check" "frontend-healthcheck" {
+  for_each = toset(var.env)
+  project  = google_project.frontend-proj[each.key].name
+  name     = "haproxy-fe-hc"
   http_health_check {
     port               = 80
     port_specification = "USE_FIXED_PORT"
@@ -116,11 +128,12 @@ resource "google_compute_health_check" "example-frontend-healthcheck" {
 
 # the autoscaler decides the desired instance count based on its policies, in this case
 # a simple metric of 90% cpu usage, and triggers the instance group manager
-resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
-  project = google_project.example-frontend-proj.name
-  region  = var.region
-  name    = "haproxy-fe"
-  target  = google_compute_region_instance_group_manager.example-frontend-instance-group-manager.id
+resource "google_compute_region_autoscaler" "frontend-autoscaler" {
+  for_each = toset(var.env)
+  project  = google_project.frontend-proj[each.key].name
+  region   = var.region
+  name     = "haproxy-fe"
+  target   = google_compute_region_instance_group_manager.frontend-instance-group-manager[each.key].id
   autoscaling_policy {
     max_replicas    = 10
     min_replicas    = 1
@@ -134,121 +147,134 @@ resource "google_compute_region_autoscaler" "example-frontend-autoscaler" {
 # Load Balancer Section
 
 # Reserve a fixed public IP
-resource "google_compute_global_address" "example-frontend-external-address" {
-  project      = google_project.example-frontend-proj.name
+resource "google_compute_global_address" "frontend-external-address" {
+  for_each     = toset(var.env)
+  project      = google_project.frontend-proj[each.key].name
   name         = "haproxy-fe-extaddr"
   address_type = "EXTERNAL"
-  description  = "FE MIG External Load Balancer address"
+  description  = "FE MIG External Load Balancer address - ${each.key} env"
 }
 
 # The urlmap is used to route traffic based on urls and headers;
 # to rewrite urls and headers; to generate redirects; and more.
-resource "google_compute_url_map" "example-frontend-urlmap" {
-  project         = google_project.example-frontend-proj.name
+resource "google_compute_url_map" "frontend-urlmap" {
+  for_each        = toset(var.env)
+  project         = google_project.frontend-proj[each.key].name
   name            = "haproxy-fe-urlmap"
-  default_service = google_compute_backend_service.example-frontend-service.id
+  default_service = google_compute_backend_service.frontend-service[each.key].id
 }
 
 # This is a L7 load balancer so it has a proxy component
-resource "google_compute_target_http_proxy" "example-frontend-http-proxy" {
-  project = google_project.example-frontend-proj.name
-  name    = "haproxy-fe-http-proxy"
-  url_map = google_compute_url_map.example-frontend-urlmap.id
+resource "google_compute_target_http_proxy" "frontend-http-proxy" {
+  for_each = toset(var.env)
+  project  = google_project.frontend-proj[each.key].name
+  name     = "haproxy-fe-http-proxy"
+  url_map  = google_compute_url_map.frontend-urlmap[each.key].id
 }
 
-resource "google_compute_target_https_proxy" "example-frontend-https-proxy" {
-  project         = google_project.example-frontend-proj.name
+resource "google_compute_target_https_proxy" "frontend-https-proxy" {
+  for_each        = toset(var.env)
+  project         = google_project.frontend-proj[each.key].name
   name            = "haproxy-fe-https-proxy"
-  url_map         = google_compute_url_map.example-frontend-urlmap.id
-  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.example-certmap.id}"
+  url_map         = google_compute_url_map.frontend-urlmap[each.key].id
+  certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.frontend-certmap[each.key].id}"
 }
 
 # The backend service, to attach the MIG to the balancer
-resource "google_compute_backend_service" "example-frontend-service" {
-  project               = google_project.example-frontend-proj.name
+resource "google_compute_backend_service" "frontend-service" {
+  for_each              = toset(var.env)
+  project               = google_project.frontend-proj[each.key].name
   name                  = "haproxy-fe"
   load_balancing_scheme = "EXTERNAL"
-  health_checks         = [google_compute_health_check.example-frontend-healthcheck.self_link]
+  health_checks         = [google_compute_health_check.frontend-healthcheck[each.key].self_link]
   protocol              = "HTTP"
   backend {
-    group = google_compute_region_instance_group_manager.example-frontend-instance-group-manager.instance_group
+    group = google_compute_region_instance_group_manager.frontend-instance-group-manager[each.key].instance_group
   }
 }
 
 # Forwarding rule is the front component of the GLB
-resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule-http" {
-  project               = google_project.example-frontend-proj.name
+resource "google_compute_global_forwarding_rule" "frontend-forwarding-rule-http" {
+  for_each              = toset(var.env)
+  project               = google_project.frontend-proj[each.key].name
   name                  = "haproxy-fe-fwrule-http"
   load_balancing_scheme = "EXTERNAL"
   port_range            = "80"
-  ip_address            = google_compute_global_address.example-frontend-external-address.id
-  target                = google_compute_target_http_proxy.example-frontend-http-proxy.id
+  ip_address            = google_compute_global_address.frontend-external-address[each.key].id
+  target                = google_compute_target_http_proxy.frontend-http-proxy[each.key].id
 }
-resource "google_compute_global_forwarding_rule" "example-frontend-forwarding-rule-https" {
-  project               = google_project.example-frontend-proj.name
+resource "google_compute_global_forwarding_rule" "frontend-forwarding-rule-https" {
+  for_each              = toset(var.env)
+  project               = google_project.frontend-proj[each.key].name
   name                  = "haproxy-fe-fwrule-https"
   load_balancing_scheme = "EXTERNAL"
   port_range            = "443"
-  ip_address            = google_compute_global_address.example-frontend-external-address.id
-  target                = google_compute_target_https_proxy.example-frontend-https-proxy.id
+  ip_address            = google_compute_global_address.frontend-external-address[each.key].id
+  target                = google_compute_target_https_proxy.frontend-https-proxy[each.key].id
 }
 
 # Certificate Manager Section
 
 # Create a certificate map, used by the https proxy
-resource "google_certificate_manager_certificate_map" "example-certmap" {
-  project     = google_project.example-frontend-proj.name
-  name        = "example-certmap"
+resource "google_certificate_manager_certificate_map" "frontend-certmap" {
+  for_each    = toset(var.env)
+  project     = google_project.frontend-proj[each.key].name
+  name        = "fe-certmap"
   description = "Certificate map for ${local.app_fqdn}"
 }
 
 # add a certificate entry to the map using...
-resource "google_certificate_manager_certificate_map_entry" "example-certmap-entry" {
-  project      = google_project.example-frontend-proj.name
-  name         = "example-certmap-entry"
+resource "google_certificate_manager_certificate_map_entry" "frontend-certmap-entry" {
+  for_each     = toset(var.env)
+  project      = google_project.frontend-proj[each.key].name
+  name         = "certmap-entry"
   description  = "Cert Manager map entry for ${local.app_fqdn}"
-  map          = google_certificate_manager_certificate_map.example-certmap.name
-  certificates = [google_certificate_manager_certificate.example-certmap-certificate.id]
+  map          = google_certificate_manager_certificate_map.frontend-certmap[each.key].name
+  certificates = [google_certificate_manager_certificate.frontend-certmap-certificate[each.key].id]
   matcher      = "PRIMARY"
 }
 
 # ...this certificate. Authorize it using...
-resource "google_certificate_manager_certificate" "example-certmap-certificate" {
-  project     = google_project.example-frontend-proj.name
-  name        = "example-certmap-certificate"
+resource "google_certificate_manager_certificate" "frontend-certmap-certificate" {
+  for_each    = toset(var.env)
+  project     = google_project.frontend-proj[each.key].name
+  name        = "fe-certmap-certificate"
   description = "Cert Manager certificate for ${local.app_fqdn}"
   scope       = "DEFAULT"
   managed {
     domains            = [local.app_fqdn]
-    dns_authorizations = [google_certificate_manager_dns_authorization.example-dns-auth.id]
+    dns_authorizations = [google_certificate_manager_dns_authorization.frontend-dns-auth[each.key].id]
   }
 }
 
 # ...this dns authorization
-resource "google_certificate_manager_dns_authorization" "example-dns-auth" {
-  project     = google_project.example-frontend-proj.name
-  name        = "example-dns-auth"
+resource "google_certificate_manager_dns_authorization" "frontend-dns-auth" {
+  for_each    = toset(var.env)
+  project     = google_project.frontend-proj[each.key].name
+  name        = "fe-dns-auth"
   description = "Cert Manager authorization for ${local.app_fqdn}"
   domain      = local.app_fqdn
 }
 
 # The dns record for dns auth. We put the entry on the same project as the dns zone, because
 # Cloud DNS is a bit grumpy about cross-project dns.
-resource "google_dns_record_set" "example-dns-auth-entry" {
-  project      = google_project.example-net-proj.name
-  name         = google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].name
-  type         = google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].type
-  rrdatas      = [google_certificate_manager_dns_authorization.example-dns-auth.dns_resource_record[0].data]
-  managed_zone = google_dns_managed_zone.example-zone.name
+resource "google_dns_record_set" "dns-auth-entry" {
+  for_each     = toset(var.env)
+  project      = google_project.net-proj[each.key].name
+  name         = google_certificate_manager_dns_authorization.frontend-dns-auth[each.key].dns_resource_record[0].name
+  type         = google_certificate_manager_dns_authorization.frontend-dns-auth[each.key].dns_resource_record[0].type
+  rrdatas      = [google_certificate_manager_dns_authorization.frontend-dns-auth[each.key].dns_resource_record[0].data]
+  managed_zone = google_dns_managed_zone.net-dns-zone[each.key].name
   ttl          = 300
 }
 
 # The dns record for our app.
-resource "google_dns_record_set" "example-dns-app-entry" {
-  project      = google_project.example-net-proj.name
-  name         = "app-${var.prefix}.${google_dns_managed_zone.example-zone.dns_name}"
-  managed_zone = google_dns_managed_zone.example-zone.name
+resource "google_dns_record_set" "dns-app-entry" {
+  for_each     = toset(var.env)
+  project      = google_project.net-proj[each.key].name
+  name         = "app.${google_dns_managed_zone.net-dns-zone[each.key].dns_name}"
+  managed_zone = google_dns_managed_zone.net-dns-zone[each.key].name
   type         = "A"
   ttl          = 300
-  rrdatas      = [google_compute_global_address.example-frontend-external-address.address]
+  rrdatas      = [google_compute_global_address.frontend-external-address[each.key].address]
 }
