@@ -34,10 +34,11 @@ variable "dns_zone" {
   type        = map(map(string))
 }
 
-#variable "user-data" {
-#  description = "content of user-data for image template"
-#  type        = any
-#}
+variable "user-data" {
+  description = "content of user-data for image template"
+  type        = map(string)
+}
+
 variable "be_ip" {
   type = map(string)
 }

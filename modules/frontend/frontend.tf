@@ -29,11 +29,7 @@ resource "google_compute_instance_template" "frontend-instance-template" {
   # creates the haproxy config file in the stateful partition (dir haproxy/) 
   # creates the systemd unit that launches the haproxy docker and mounts the haproxy/ dir inside of it
   metadata = {
-    #user-data              = var.user-data
-    user-data = templatefile(
-      "./cloud-init/frontend.tpl",
-      { be_ip = var.be_ip[each.key] }
-    )
+    user-data              = var.user-data[each.key]
     google-logging-enabled = true
     enable-oslogin         = true
   }
