@@ -13,6 +13,7 @@ on Google Cloud Platform. This creates:
   commented code
 
 Everything inside this folder/project tree:
+
 ![Folders and projects tree](folder-project-tree.png)
 
 REQUIREMENTS
