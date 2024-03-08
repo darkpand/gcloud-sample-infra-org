@@ -11,8 +11,13 @@ output "subnet_id" {
 output "dns_zone" {
   value = {
     for k in var.env : k => {
-      name         = google_dns_managed_zone.net-dns-zone[k].name
-      dns_name     = google_dns_managed_zone.net-dns-zone[k].dns_name
+      name     = google_dns_managed_zone.net-dns-zone[k].name
+      dns_name = google_dns_managed_zone.net-dns-zone[k].dns_name
     }
+  }
+}
+output "name_servers" {
+  value = {
+    for k in var.env : k => google_dns_managed_zone.net-dns-zone[k].name_servers
   }
 }

@@ -34,6 +34,15 @@ INSTRUCTIONS
 - The Google Cloud default billable projects quota is 5, and changing it
   involves an authorization procedure with Google support. If you didn't
   do that, don't create more than one env, as every env creates 3 projects.
+- You must then add some glue records on your dns, to delegate resolution
+  of the zone gcp.${var.organization.domain}. You can find the records in the
+  dns_name output map
+- And voila', the apps are ready! you can find the fqdn in the app_name output.
+- The https certificate, and the listener on the GLB, will be available only
+  after you put the NS records on your dns and the certificate manager
+  validates your certificate. Be patient. If it doesn't work after a good
+  amount of minutes (let's say half an hour or more) you could try to taint
+  the dns auth resource and reapply.
 
 BUGS
 
